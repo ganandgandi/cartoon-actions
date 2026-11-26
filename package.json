@@ -1,0 +1,29 @@
+{
+  "dependencies": {
+    "@react-three/fiber": "^9.3.0",
+    "@react-three/postprocessing": "3.0.4",
+    "@remotion/bundler": "^4.0.0",
+    "@remotion/cli": "^4.0.0",
+    "@remotion/renderer": "^4.0.0",
+    "@remotion/three": "^4.0.0",
+    "postprocessing": "6.36.6",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "remotion": "^4.0.0",
+    "three": "0.170.0"
+  },
+  "description": "Feasibility pilot: cartoon-3d-short BRIDGE template on this VM (Remotion 4 + three.js)",
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/three": "0.170.0",
+    "typescript": "5.6.3"
+  },
+  "name": "cartoon-pilot",
+  "private": true,
+  "scripts": {
+    "draft": "node scripts/render_draft.mjs",
+    "stills": "node scripts/bridge-stills.mjs out/stills/f"
+  },
+  "version": "0.1.0"
+}

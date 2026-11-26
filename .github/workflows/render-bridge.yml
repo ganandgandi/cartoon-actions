@@ -1,0 +1,139 @@
+name: render-bridge
+
+# Parallel chunk render of the Remotion "BridgeShort" composition.
+# One setup job builds the chunk index matrix from the inputs, `chunks`
+# matrix jobs each render a contiguous frame range at scale 1, and a
+# stitch job concatenates the chunk mp4s into bridge-final.mp4.
+#
+# Runners have no GPU: rendering is CPU + SwiftShader (REMOTION_GL=swangle).
+# Speed comes from parallelism, not from fast frames.
+
+on:
+  workflow_dispatch:
+    inputs:
+      total_frames:
+        description: "Total frames to render, starting at frame 0 (300 = 10 s pipeline test, 2025 = full template)"
+        required: true
+        default: "300"
+        type: string
+      chunks:
+        description: "Number of parallel chunk jobs"
+        required: true
+        default: "10"
+        type: string
+
+jobs:
+  setup:
+    name: Build chunk matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.mk.outputs.matrix }}
+    steps:
+      - id: mk
+        name: Emit chunk index array as JSON
+        run: |
+          chunks="${{ inputs.chunks }}"
+          matrix=$(jq -cn --argjson n "$chunks" '[range(0; $n)]')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Chunk indices: $matrix"
+
+  render:
+    name: Render chunk ${{ matrix.idx }}
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        idx: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    env:
+      # Software GL is the only backend that works without a GPU
+      # (plain "angle" fails with "Error creating WebGL context").
+      REMOTION_GL: swangle
+      # BROWSER_EXE intentionally unset: Remotion downloads its own
+      # Chrome Headless Shell on first use.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Generate silent mix (70 s stereo wav)
+        run: ffmpeg -y -f lavfi -i anullsrc=r=48000:cl=stereo -t 70 silent_mix.wav
+
+      - name: Compute frame range for this chunk
+        id: range
+        run: |
+          total="${{ inputs.total_frames }}"
+          chunks="${{ inputs.chunks }}"
+          idx="${{ matrix.idx }}"
+          size=$(( (total + chunks - 1) / chunks ))
+          start=$(( idx * size ))
+          end=$(( start + size - 1 ))
+          if [ "$end" -ge "$total" ]; then end=$(( total - 1 )); fi
+          if [ "$start" -gt "$end" ]; then empty=true; else empty=false; fi
+          echo "start=$start" >> "$GITHUB_OUTPUT"
+          echo "end=$end" >> "$GITHUB_OUTPUT"
+          echo "empty=$empty" >> "$GITHUB_OUTPUT"
+          echo "chunk $idx: frames $start-$end (empty=$empty)"
+
+      - name: Render chunk
+        if: steps.range.outputs.empty != 'true'
+        run: |
+          node scripts/render_draft.mjs BridgeShort "chunk-${{ matrix.idx }}.mp4" silent_mix.wav \
+            --scale 1 \
+            --range "${{ steps.range.outputs.start }}-${{ steps.range.outputs.end }}"
+
+      - name: Upload chunk
+        if: steps.range.outputs.empty != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ matrix.idx }}
+          path: chunk-${{ matrix.idx }}.mp4
+          retention-days: 1
+
+  stitch:
+    name: Stitch chunks into final video
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download all chunk artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: chunk-*
+          path: chunks
+
+      - name: Concatenate chunks in numeric order
+        run: |
+          ls -R chunks
+          : > concat.txt
+          for d in $(printf '%s\n' chunks/chunk-* | sort -t- -k2,2n); do
+            f=$(ls "$d"/*.mp4 | head -n 1)
+            echo "file '$PWD/$f'" >> concat.txt
+          done
+          cat concat.txt
+          if ffmpeg -y -f concat -safe 0 -i concat.txt -c copy bridge-final.mp4; then
+            echo "Stream copy succeeded."
+          else
+            echo "Stream copy failed; falling back to re-encode."
+            ffmpeg -y -f concat -safe 0 -i concat.txt \
+              -c:v libx264 -crf 20 -c:a aac -b:a 192k bridge-final.mp4
+          fi
+          ls -la bridge-final.mp4
+
+      - name: Upload final video
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-final
+          path: bridge-final.mp4
+          retention-days: 1
